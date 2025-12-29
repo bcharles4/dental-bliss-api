@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -9,12 +10,52 @@ const appointmentRoutes = require('./routes/Appointments');
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection - SIMPLIFIED
-const MONGODB_URI = 'mongodb+srv://charlesb614_db_user:Go7rjh4TBBaLVWjI@cluster0.ngxwt9s.mongodb.net/?appName=Cluster0';
+// MongoDB Connection with better configuration
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://charlesb614_db_user:Go7rjh4TBBaLVWjI@cluster0.ngxwt9s.mongodb.net/bliss_dental?retryWrites=true&w=majority';
 
-mongoose.connect(MONGODB_URI)
-.then(() => console.log('MongoDB Connected'))
-.catch(err => console.log('MongoDB Connection Error:', err));
+// Connection options
+const mongooseOptions = {
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+    maxPoolSize: 10,
+    minPoolSize: 5,
+    connectTimeoutMS: 10000,
+    family: 4,
+    retryWrites: true,
+    w: 'majority'
+};
+
+// Connect to MongoDB
+const connectWithRetry = () => {
+    console.log('Attempting MongoDB connection...');
+    
+    mongoose.connect(MONGODB_URI, mongooseOptions)
+    .then(() => {
+        console.log('✅ MongoDB Connected Successfully');
+    })
+    .catch(err => {
+        console.error('❌ MongoDB Connection Error:', err.message);
+        console.log('🔄 Retrying connection in 5 seconds...');
+        setTimeout(connectWithRetry, 5000);
+    });
+};
+
+// Initial connection
+connectWithRetry();
+
+// MongoDB event listeners
+mongoose.connection.on('error', err => {
+    console.error('MongoDB connection error:', err.message);
+});
+
+mongoose.connection.on('disconnected', () => {
+    console.log('MongoDB disconnected. Attempting to reconnect...');
+    setTimeout(connectWithRetry, 5000);
+});
+
+mongoose.connection.on('reconnected', () => {
+    console.log('✅ MongoDB reconnected');
+});
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -41,6 +82,7 @@ const userSchema = new mongoose.Schema({
     },
     role: {
         type: String,
+        enum: ['patient', 'doctor', 'admin'],
         default: 'patient'
     },
     createdAt: {
@@ -49,8 +91,41 @@ const userSchema = new mongoose.Schema({
     }
 });
 
-
 const User = mongoose.model('User', userSchema);
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    
+    res.status(200).json({
+        success: true,
+        status: 'API is running',
+        database: dbStatus,
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Home route
+app.get('/', (req, res) => {
+    res.json({ 
+        message: 'Dental Bliss API is running!',
+        version: '1.0.0',
+        endpoints: {
+            health: 'GET /api/health',
+            register: 'POST /api/register',
+            login: 'POST /api/login',
+            users: 'GET /api/users',
+            checkEmail: 'GET /api/check-email/:email',
+            bookAppointment: 'POST /api/appointments/book',
+            getUserAppointments: 'GET /api/appointments/user/:userId',
+            checkAvailability: 'GET /api/appointments/availability',
+            cancelAppointment: 'PUT /api/appointments/cancel/:appointmentId',
+            updateAppointment: 'PUT /api/appointments/:appointmentId',
+            getAppointment: 'GET /api/appointments/:appointmentId'
+        }
+    });
+});
 
 // Register Route
 app.post('/api/register', async (req, res) => {
@@ -85,7 +160,7 @@ app.post('/api/register', async (req, res) => {
         const user = new User({
             name,
             email,
-            password, // Note: In production, hash this with bcrypt
+            password,
             phone: phone || '',
             role: 'patient'
         });
@@ -135,7 +210,7 @@ app.post('/api/login', async (req, res) => {
             });
         }
 
-        // Check password (simple comparison for now)
+        // Check password
         if (user.password !== password) {
             return res.status(401).json({
                 success: false,
@@ -199,30 +274,26 @@ app.get('/api/check-email/:email', async (req, res) => {
     }
 });
 
-
-
-
-// Add this after other route declarations
+// Add appointment routes
 app.use('/api/appointments', appointmentRoutes);
 
-app.get('/', (req, res) => {
-    res.json({ 
-        message: 'Dental Bliss API is running!',
-        version: '1.0.0',
-        endpoints: {
-            register: 'POST /api/register',
-            login: 'POST /api/login',
-            users: 'GET /api/users',
-            checkEmail: 'GET /api/check-email/:email',
-            bookAppointment: 'POST /api/appointments/book',
-            getUserAppointments: 'GET /api/appointments/user/:userId',
-            checkAvailability: 'GET /api/appointments/availability',
-            cancelAppointment: 'PUT /api/appointments/cancel/:appointmentId',
-            updateAppointment: 'PUT /api/appointments/:appointmentId',
-            getAppointment: 'GET /api/appointments/:appointmentId'
-        }
+// 404 handler - FIXED VERSION
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: 'Route not found'
     });
 });
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error('Server error:', err);
+    res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+    });
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
